@@ -15,6 +15,7 @@
 *.so
 *.dylib
 *.dll
+*.dSYM
 
 # Fortran module files
 *.mod
@@ -32,4 +33,7 @@
 *.app
 
 # Side affect logfiles
+MultiWriteSingleRead
 LogFile*.txt
+
+.DS_Store
