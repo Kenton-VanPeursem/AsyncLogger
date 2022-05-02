@@ -1,19 +1,21 @@
 // MultiWriteSingleRead.cpp : This file contains the 'main' function. Program execution
 // begins and ends there.
 
-#include <iostream>
-#include <sstream>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <fstream>
+#include <iostream>
 #include <iterator>
-#include <vector>
+#include <mutex>
+#include <queue>
+#include <semaphore>
+#include <sstream>
 #include <string>
 #include <thread>
-#include <queue>
 #include <utility>
-#include <atomic>
-#include <mutex>
-#include <semaphore>
-#include <chrono>
+#include <vector>
+
 
 enum LogLevel {
     DEBUG, INFO, WARN, ERROR
@@ -45,101 +47,91 @@ struct LogMessage {
     }
 };
 
-void prop(void) {
-}
 
 class Logger {
-private:
-    // friend void ::prop();
-    // Globals used by all parties
-    static std::atomic_long messageListSize;
-    static std::queue<LogMessage> messagesToLog;
-    static std::counting_semaphore<> dequeSema;
-    static std::mutex messageListMutex;
-    static std::vector<LogMessage> messageList;
+    public:
+        std::atomic_long messageListSize;
+        std::queue<LogMessage> messagesToLog;
+        std::counting_semaphore<> dequeSema;
+        std::mutex messageListMutex;
+        std::vector<LogMessage> messageList;
 
-    // This is the reader thead worker function.
-    static void popMessages(void) { // Note: this thread never returns, it just sits and waits for messages.
-        // Create the end desired log file (to where all the messages are being put)
-        std::string filename = "LogFile_";
-        filename.append(std::to_string(time(NULL)));
-        filename.append(".txt");
-        std::ofstream logFile(filename);
+        void popMessages(void) {
+            std::string filename = "LogFile_";
+            filename.append(std::to_string(time(NULL)));
+            filename.append(".txt");
+            std::ofstream logFile(filename);
 
-        // PUll each message out of the queue and tell the log file which thread sent the message.
-        LogMessage item(INFO, "");
-        while (true) {
-            dequeSema.acquire(); // This either blocks or decrements the semaphore
-            item = messagesToLog.front();
+            LogMessage item(INFO, "");
+            while (true) {
+                dequeSema.acquire(); // This either blocks or decrements the semaphore
+                item = messagesToLog.front();
+
+                messageListMutex.lock();
+                messagesToLog.pop();
+                messageListMutex.unlock();
+
+                logFile << item.formatted();
+                std::flush(logFile);
+                messageListSize--;
+            }
+        }
+
+        void spawnReader() {
+            std::thread reader(&Logger::popMessages, this);
+            reader.detach();
+        }
+
+        // This is the writer thread worker function.
+        void pushMessage(LogLevel level, std::string msg) {  // Pushes the thread ID and the message into the queue.
+            LogMessage logmsg(level, msg);
 
             messageListMutex.lock();
-            messagesToLog.pop();
+            messagesToLog.push(logmsg);
             messageListMutex.unlock();
 
-            logFile << item.formatted();
-            std::flush(logFile);
-            messageListSize--;
+            dequeSema.release(); // This increments the semaphore
         }
-    }
 
-    void spawnReader() {
-        std::thread reader(popMessages);
-        reader.detach();
-    }
-
-    // This is the writer thread worker function.
-    static void pushMessage(LogLevel level, std::string msg) {  // Pushes the thread ID and the message into the queue.
-        messageListSize++;
-        LogMessage logmsg(level, msg);
-
-        messageListMutex.lock();
-        messagesToLog.push(logmsg);
-        messageListMutex.unlock();
-
-        dequeSema.release(); // This increments the semaphore
-    }
-
-    void flush() {
-        while (messageListSize) {
-            std::cout << "Waiting for log messages to write (" << messageListSize << ")" << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+        void flush() {
+            while (messageListSize) {
+                std::cout << "Waiting for log messages to write (" << messageListSize << ")" << std::endl;
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
         }
-    }
 
-public:
-    Logger() {
-        messageListSize = 0;
+    public:
+        Logger() : dequeSema(0) {
+            spawnReader();
+        }
 
-        spawnReader();
-    }
+        void debug(std::string msg) {
+            messageListSize++;
+            std::thread t1(&Logger::pushMessage, this, DEBUG, msg);
+            t1.detach();
+        }
 
-    void debug(std::string msg) {
-        std::thread t1(prop);
-        // std::thread t1(pushMessage, DEBUG, msg);
-        t1.detach();
-    }
+        void info(std::string msg) {
+            messageListSize++;
+            std::thread t1(&Logger::pushMessage, this, DEBUG, msg);
+            t1.detach();
+        }
 
-    void info(std::string msg) {
-        std::thread t1(prop);
-        // std::thread t1(pushMessage, DEBUG, msg);
-        t1.detach();
-    }
+        void warn(std::string msg) {
+            messageListSize++;
+            std::thread t1(&Logger::pushMessage, this, DEBUG, msg);
+            t1.detach();
+        }
 
-    void warn(std::string msg) {
-        std::thread t1(prop);
-        // std::thread t1(&Logger::pushMessage, DEBUG, msg);
-        t1.detach();
-    }
+        void error(std::string msg) {
+            messageListSize++;
+            std::thread t1(&Logger::pushMessage, this, DEBUG, msg);
+            t1.detach();
+        }
 
-    void error(std::string msg) {
-        std::thread t1(prop);
-        // std::thread t1(&Logger::pushMessage, DEBUG, msg);
-        t1.detach();
-    }
-
-    virtual ~Logger() {
-        // flush();
-    }
+        virtual ~Logger() {
+            flush();
+        }
 };
 
 int main() {
